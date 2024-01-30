@@ -8,6 +8,7 @@ from loguru import logger
 import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.utils import data
 from torch.utils import tensorboard
 import tqdm
@@ -30,8 +31,10 @@ class ImageDataset(data.Dataset):
             1.0 if 'cone' in datum else 0.0, dtype=torch.float32)
         datum['atmosphere_mask'] = torch.tensor(
             1.0 if 'atmosphere' in datum else 0.0, dtype=torch.float32)
+        # the cone is scaled down to be in range 0-1, 13 being the max cone seen
+        # in the source data.
         datum['cone'] = datum.get(
-            'cone', torch.tensor(0.0))
+            'cone', torch.tensor(0.0)) / 13
         datum['atmosphere'] = datum.get(
             'atmosphere', torch.zeros(self._n_atm))
 
@@ -43,17 +46,6 @@ class ImageDataset(data.Dataset):
                 datum[k] = datum[k].unsqueeze(0)
 
         return datum
-
-
-class ClassifHead(torch.nn.Module):
-    """Classification head for the glaze model."""
-    def __init__(self, n_classes: int):
-        super().__init__()
-        self._n_classes = n_classes
-        self.fc = nn.LazyLinear(2048, n_classes)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self._fc(x)
 
 
 class GlazeModel(torch.nn.Module):
@@ -85,8 +77,19 @@ class GlazeModel(torch.nn.Module):
         # classification as it should hold all the information on the image
         out = self.backbone(**inputs)[0][:, 0, :]
         atm = self.atm_fc(out)
+
         ingredients = self.ingredients_fc(out)
         extras = self.extras_fc(out)
+        # we normalize because the sum should be 1.
+        # A softmax would skew the distribution towards having a single
+        # ingredient which is not what we want. Sigmoid would also skew the
+        # distribution towards having either a lot or none of any given
+        # ingredient. Because we want to have a positive value for each but
+        # not necessarily a set maximum, we also apply a ReLu before the
+        # normalization.
+        ingredients = F.relu(ingredients)
+        ingredients = ingredients / (ingredients.sum(dim=1, keepdim=True)
+                                     + torch.finfo(ingredients.dtype).eps)
         cone = self.cone_fc(out)
         return ingredients, extras, atm, cone
 
@@ -122,6 +125,8 @@ def step(device: torch.device,
 
     batch['cone_mask'] = batch['cone_mask'].to(device)
     cone_count = batch['cone_mask'].sum() + 1e-6
+    # no activation on cone because we want an actual value.
+    # The target value is scaled down to be between 0 and 1.
     cone_loss = (
         torch.nn.functional.mse_loss(
             cone, batch['cone'].to(device), reduction='none')
@@ -130,9 +135,11 @@ def step(device: torch.device,
 
     batch['atmosphere_mask'] = batch['atmosphere_mask'].to(device)
     atm_count = batch['atmosphere_mask'].sum() + 1e-6
+    # the atm is a multi-class classification problem so we use a masked
+    # sigmoid cross entropy
     atm_loss = (
         torch.nn.functional.cross_entropy(
-            atm, batch['atmosphere'].to(device), reduction='none')
+            F.sigmoid(atm), batch['atmosphere'].to(device), reduction='none')
         * batch['atmosphere_mask']
     ).sum() / atm_count
 
