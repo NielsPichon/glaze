@@ -59,6 +59,7 @@ class GlazeModel(torch.nn.Module):
         self.ingredients_fc = nn.LazyLinear(n_ing)
         self.extras_fc = nn.LazyLinear(n_ing)
         self.cone_fc = nn.LazyLinear(1)
+        self.device = torch.device('cpu')
 
     def get_backbone_params(self):
         """Returns the parameters fgrom the backbone model only."""
@@ -71,8 +72,16 @@ class GlazeModel(torch.nn.Module):
                 *self.extras_fc.parameters(),
                 *self.cone_fc.parameters())
 
+    def to(self, *args, **kwargs):
+        """Overriding to() to keep self.device in sync with the model's device.
+        """
+        if isinstance(args[0], torch.device):
+            self.device = args[0]
+        return super().to(*args, **kwargs)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         inputs = self.processor(x, return_tensors="pt")
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
         # ViTForImageClassification only uses the first token (CLS) for
         # classification as it should hold all the information on the image
         out = self.backbone(**inputs)[0][:, 0, :]
@@ -115,7 +124,7 @@ def get_shapes(src: pathlib.Path) -> Tuple[int, int]:
 def step(device: torch.device,
          model: nn.Module,
          batch: Dict[str, torch.Tensor]):
-    ingredients, extras, atm, cone = model(batch['input'].to(device))
+    ingredients, extras, atm, cone = model(batch['input'])
 
     ing_loss = torch.nn.functional.mse_loss(ingredients,
                                             batch['amount'].to(device))
@@ -193,6 +202,7 @@ def run_training(src: pathlib.Path,
     """Run the training loop."""
     use_cuda = torch.cuda.is_available()
     device = torch.device('cuda:0') if use_cuda else torch.device('cpu')
+    logger.info(f'Using device {device}')
 
     ckpt_path = ckpt_path / datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     ckpt_path.mkdir(parents=True, exist_ok=True)
