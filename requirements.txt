@@ -1,4 +1,9 @@
 loguru
 pydantic
-tqdm
+numpy
+requests
 selenium
+tensorboard
+tqdm
+transformers
+torch
