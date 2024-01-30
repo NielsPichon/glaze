@@ -209,6 +209,7 @@ def run_training(src: pathlib.Path,
                                  if train_head_only else model.parameters())
 
     if train_head_only:
+        logger.info('Freezing backbone')
         model.backbone.requires_grad_(False)
         model.backbone.eval()
 
@@ -256,10 +257,15 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=10,
                         help='Number of epochs')
     parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--train-all', dest='train_head_only',
+                        action='store_false',
+                        help='Train the whole model rather than only '
+                        'the heads.')
     args = parser.parse_args()
 
     run_training(src=args.src,
                  ckpt_path=args.out,
                  batch_size=args.batchsize,
                  epochs=args.epochs,
-                 lr=args.lr)
+                 lr=args.lr,
+                 train_head_only=args.train_head_only)
